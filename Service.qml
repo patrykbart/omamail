@@ -67,7 +67,9 @@ Item {
     undoSendSeconds: 10,
     unifiedCalendarView: false,
     showBarIcon: true,
-    unifiedMailboxes: false
+    unifiedMailboxes: false,
+    previewOnCursor: false,
+    markReadDelaySec: 2
   })
   property var settings: defaultSettingValues
   readonly property int undoSendSeconds: Outbox.normalizeDelay(
@@ -95,6 +97,26 @@ Item {
   // typo rather than an answer given in the interface, and a typo should not
   // be what takes the icon away.
   readonly property bool showBarIcon: !settings || settings.showBarIcon !== false
+
+  // Whether the cursor reaching a message is enough to show it.
+  readonly property bool previewOnCursor: !!settings
+    && settings.previewOnCursor === true
+
+  // How long the cursor has to stay before a previewed message counts as
+  // read. Clamped rather than trusted: this is a hand-editable file, and a
+  // negative interval on a Timer never fires at all.
+  //
+  // A number or nothing, because `Number` reads `null`, `false` and `""` as
+  // zero and zero is a real answer here — "mark it read the moment it is
+  // previewed". A settings file that lost the key, or holds a word where a
+  // count should be, must not be read as somebody having asked for that.
+  readonly property int markReadDelaySec: {
+    var raw = settings ? settings.markReadDelaySec : 2
+    if (typeof raw !== "number") return 2
+    var value = Math.floor(raw)
+    if (!isFinite(value) || value < 0) return 2
+    return Math.min(30, value)
+  }
 
   // Thunderbird and Betterbird keep both explicit and learned addresses in
   // their local profile. The helper reads those databases without modifying
@@ -168,6 +190,18 @@ Item {
   // survives a restart.
   function setUnifiedMailboxes(value) {
     persistSetting("unifiedMailboxes", value === true)
+  }
+
+  function setPreviewOnCursor(value) {
+    persistSetting("previewOnCursor", value === true)
+  }
+
+  // The same rule on the way in: what cannot be read as a count is written as
+  // the default rather than as the shortest dwell there is.
+  function setMarkReadDelaySec(value) {
+    var next = Math.floor(Number(value))
+    if (!isFinite(next) || next < 0) next = 2
+    persistSetting("markReadDelaySec", Math.min(30, next))
   }
 
   // ---------------------------------------------------------- the accounts
@@ -1060,6 +1094,23 @@ Item {
   readonly property string rawQuery: current ? current.rawQuery : ""
   // A unified view draws no labels, so it can never be showing one.
   readonly property string rawLabelId: unified || !current ? "" : current.rawLabelId
+
+  // Whether the message on screen got there because the cursor passed over it
+  // rather than because somebody opened it.
+  //
+  // Above `MailAccount` because two decisions in the window turn on it and
+  // neither can be made from `selectedId` alone: a previewed message satisfies
+  // "is this the selected one" while not being open, which made an archive
+  // open its neighbour and a reply skip the open it needs.
+  //
+  // Asked of the mailbox holding the selection, not the visible one: in a
+  // merged list the previewed row can belong to either, and reading it from
+  // `current` would have called a preview an open message the moment the row
+  // came from anywhere else.
+  readonly property bool selectionIsPreview: {
+    var host = unified ? selectionHost : current
+    return !!host && host.selectionIsPreview
+  }
   readonly property bool listLoading: unified
     ? Unified.anyLoading(unifiedStates) : (!!current && current.listLoading)
   // A mailbox that cannot load is not a mailbox still loading, which is the
@@ -1191,9 +1242,9 @@ Item {
     }
     eachHost(function(host) { if (host.hasMore) host.loadMore() })
   }
-  function select(id) {
+  function select(id, previewOnly) {
     if (!unified) {
-      if (current) current.select(id)
+      if (current) current.select(id, previewOnly)
       return
     }
     var host = hostForId(id)
@@ -1203,7 +1254,16 @@ Item {
     // attachment row after the reader had moved on.
     eachHost(function(other) { if (other !== host) other.clearSelection() })
     selectionHost = host
-    host.select(sourceIdFor(id))
+    host.select(sourceIdFor(id), previewOnly)
+  }
+
+  // The dwell expiring names the row it started on, which may no longer be the
+  // selection and in a merged list may not be the visible mailbox's at all —
+  // so this routes by id rather than asking whoever is current.
+  function markPreviewRead(id) {
+    if (!unified) return current ? current.markPreviewRead(id) : false
+    var host = hostForId(id)
+    return host ? host.markPreviewRead(sourceIdFor(id)) : false
   }
   function clearSelection() {
     if (!unified) {

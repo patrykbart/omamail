@@ -1008,12 +1008,18 @@ Item {
 
   // --------------------------------------------------------------- detail
 
-  function select(id) {
+  // Whether the message on screen got there because the cursor passed over it
+  // rather than because somebody opened it. A preview is drawn the same and
+  // marked read differently, and the detail callback is where that is decided.
+  property bool selectionIsPreview: false
+
+  function select(id, previewOnly) {
     var messageId = String(id || "")
     if (messageId === "") {
       clearSelection()
       return
     }
+    selectionIsPreview = previewOnly === true
     selectedId = messageId
     var serial = ++detailSerial
     abortRequest(detailHandle)
@@ -1028,7 +1034,9 @@ Item {
     selectedReaderEmpty = true
     selectedReaderRemoteImages = 0
     sourceHtml = ""
-    remoteImagesAllowed = alwaysShowImages
+    // A preview never fetches them, whatever the standing answer is:
+    // `Model.showsRemoteImages` is where that is argued.
+    remoteImagesAllowed = Model.showsRemoteImages(alwaysShowImages, selectionIsPreview)
     remoteImagesLoading = false
     remoteImageData = ({})
     selectedRemoteImageSources = []
@@ -1163,8 +1171,20 @@ Item {
       root.loadMembers()
       // Opening a message is the one place Gmail's own clients mark it read
       // without being asked, and a reader that leaves it bold is confusing.
-      if (summary.unread) root.act(messageId, "markRead", true)
+      // A preview is not opening: `Model.marksReadOnArrival` is where that
+      // is decided.
+      if (Model.marksReadOnArrival(summary, root.selectionIsPreview))
+        root.act(messageId, "markRead", true)
     })
+  }
+
+  // What a dwell on a previewed message comes to. Asked of the message rather
+  // than of the selection: the cursor may have moved on by the time the
+  // panel's timer fires, and the one that was read is the one to mark.
+  function markPreviewRead(id) {
+    if (!Model.previewReadable(messages, id)) return false
+    act(String(id), "markRead", true)
+    return true
   }
 
   // ---------------------------------------------------------- the rail
